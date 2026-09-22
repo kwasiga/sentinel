@@ -1,6 +1,6 @@
 # Sentinel
 
-Sentinel is a FastAPI-based foundation for a security event monitoring and incident response service.
+Sentinel is a FastAPI-based security event monitoring and incident response service.
 
 The intended pipeline is:
 
@@ -8,7 +8,7 @@ The intended pipeline is:
 telemetry -> normalization -> detection -> risk scoring -> incident response
 ```
 
-The project is currently an early scaffold. The `/health` endpoint is implemented; the telemetry adapters, detection engine, risk and response engines, persistence layer, and event/incident APIs are extension points for future work.
+The current milestone provides a working authentication event pipeline: login attempts are persisted, optionally published to Redis, evaluated by a stateful brute-force rule, and promoted to durable detection findings when the configured threshold is crossed.
 
 ## Current status
 
@@ -18,15 +18,20 @@ Implemented today:
 - Basic application configuration via environment variables
 - Docker image for local development
 - Docker Compose services for PostgreSQL and Redis
-- Initial package boundaries for telemetry, detection, risk, response, API, schemas, and models
-- Health-check test
+- SQLAlchemy persistence for users, security events, and detection findings
+- Optional bootstrap user creation at application startup
+- `POST /login` with scrypt password verification and signed, expiring access tokens
+- Login-event delivery to the database and optional Redis Stream fan-out
+- Stateful brute-force detection scoped by source IP and username
+- Health-check and brute-force detection tests
 
 Not implemented yet:
 
-- Event ingestion and normalization
-- Authentication and authorization
-- Database models, migrations, and repositories
-- Detection rule execution and state management
+- General-purpose event ingestion and normalization APIs
+- Access-token validation and authorization-protected endpoints
+- Schema migrations and repository abstractions
+- Durable or distributed detection-window state
+- Additional detection rules
 - Risk scoring
 - Incident creation, enrichment, and response actions
 - Production security hardening and observability
@@ -75,7 +80,7 @@ The Compose defaults are:
 | PostgreSQL | `localhost:5432` | database `sentinel`, user `sentinel`, password `sentinel` |
 | Redis | `localhost:6379` | none |
 
-The application does not yet connect these services. Do not use the default credentials in a shared or production environment.
+The application uses PostgreSQL when `DATABASE_URL` points to it and publishes login events to Redis when `REDIS_URL` is set. Do not use the default credentials in a shared or production environment.
 
 To stop the dependencies:
 
@@ -91,25 +96,44 @@ Configuration is read from environment variables through `app.config.Settings`:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DATABASE_URL` | empty | Future SQLAlchemy/PostgreSQL connection URL |
-| `REDIS_URL` | empty | Future Redis connection URL |
+| `DATABASE_URL` | in-memory SQLite | SQLAlchemy database connection URL; use PostgreSQL for deployed environments |
+| `REDIS_URL` | empty | Redis connection URL; when set, login events are published to Redis Streams |
+| `AUTH_SECRET` | development value | HMAC secret used to sign login tokens |
+| `AUTH_TOKEN_TTL_SECONDS` | `3600` | Login-token lifetime |
+| `BOOTSTRAP_USERNAME` | empty | Optional initial user created at startup |
+| `BOOTSTRAP_PASSWORD` | empty | Password for the optional initial user |
+| `BRUTE_FORCE_THRESHOLD` | `5` | Failed logins required to trigger brute-force detection |
+| `BRUTE_FORCE_WINDOW_SECONDS` | `60` | Sliding detection window |
 
 Example:
 
 ```bash
 export DATABASE_URL='postgresql+psycopg://sentinel:sentinel@localhost:5432/sentinel'
 export REDIS_URL='redis://localhost:6379/0'
+export AUTH_SECRET='replace-with-a-long-random-secret'
+export BOOTSTRAP_USERNAME='admin'
+export BOOTSTRAP_PASSWORD='replace-with-a-strong-password'
 ```
+
+With the bootstrap variables set, start the API once to create the initial user, then log in:
+
+```bash
+curl -X POST http://localhost:8000/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"replace-with-a-strong-password"}'
+```
+
+Each login attempt creates an `authentication.login` security event. The event is committed to PostgreSQL and, when `REDIS_URL` is configured, appended to the Redis Stream named `security-events`.
 
 ## Development
 
-Run the test suite with:
+Run the test suite from the repository root with:
 
 ```bash
-pytest
+python3 -m pytest
 ```
 
-The repository currently contains a health-check test. Add tests alongside each implemented boundary, especially for parser behavior, detection windows, risk decisions, authorization, and response idempotency.
+Using `python3 -m pytest` ensures the repository root is on Python's import path. Add tests alongside each implemented boundary, especially for parser behavior, detection windows, risk decisions, authorization, and response idempotency.
 
 ## Repository layout
 
