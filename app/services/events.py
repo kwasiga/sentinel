@@ -11,13 +11,13 @@ from app.models.security_event import SecurityEvent
 
 
 def record_security_event(
-    *, db: Session, event_id: str, event_type: str, actor: str, outcome: str, payload: dict
+    *, db: Session, event_id: str, event_type: str, actor: str, outcome: str, payload: dict, source: str = "api"
 ) -> SecurityEvent:
     event = SecurityEvent(
         id=event_id,
         event_type=event_type,
         actor=actor,
-        source="api",
+        source=source,
         outcome=outcome,
         payload=payload,
         created_at=datetime.utcnow(),

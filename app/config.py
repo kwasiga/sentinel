@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     BOOTSTRAP_PASSWORD: str = ""
     BRUTE_FORCE_THRESHOLD: int = 5
     BRUTE_FORCE_WINDOW_SECONDS: int = 60
+    PORT_SCAN_THRESHOLD: int = 10
+    PORT_SCAN_WINDOW_SECONDS: int = 60
 
 
 settings = Settings()
