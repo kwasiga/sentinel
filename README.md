@@ -1,44 +1,41 @@
 # Sentinel
 
-Sentinel is a FastAPI-based security event monitoring and incident response service.
+Sentinel is a security event monitoring and incident response service for collecting telemetry, detecting suspicious activity, scoring risk, and coordinating response work from a single API.
 
-The intended pipeline is:
+Sentinel will provide an end-to-end security operations pipeline:
 
 ```text
 telemetry -> normalization -> detection -> risk scoring -> incident response
 ```
 
-The current milestone provides a working authentication event pipeline: login attempts are persisted, optionally published to Redis, evaluated by a stateful brute-force rule, and promoted to durable detection findings when the configured threshold is crossed.
+The goal is to make security events easier to trust, investigate, and act on. Sentinel ingests events from authentication systems, cloud audit logs, and network signals, normalizes them into a common model, evaluates them against detection rules, scores the resulting risk, and creates incident records with the evidence needed for response.
 
-## Current status
+## Capabilities
 
-Implemented today:
+Sentinel is designed to support:
 
-- FastAPI application with `GET /health`
-- Basic application configuration via environment variables
-- Docker image for local development
-- Docker Compose services for PostgreSQL and Redis
-- SQLAlchemy persistence for users, security events, and detection findings
-- Optional bootstrap user creation at application startup
-- `POST /login` with scrypt password verification and signed, expiring access tokens
-- Login-event delivery to the database and optional Redis Stream fan-out
-- Stateful brute-force detection scoped by source IP and username
-- Health-check and brute-force detection tests
+- Security event ingestion through API endpoints and telemetry adapters
+- Normalization of provider-specific payloads into a consistent event schema
+- Stateful detection rules for patterns such as brute force attempts, password spraying, port scanning, and suspicious IAM behavior
+- Durable detection findings with supporting evidence and timestamps
+- Risk scoring based on rule severity, event context, user or asset criticality, and historical behavior
+- Incident creation, enrichment, assignment, status tracking, and audit history
+- Controlled response actions that are authenticated, idempotent, and reviewable
+- Local development with FastAPI, PostgreSQL, Redis, SQLAlchemy, and Docker Compose
 
-Not implemented yet:
+## System Overview
 
-- General-purpose event ingestion and normalization APIs
-- Access-token validation and authorization-protected endpoints
-- Schema migrations and repository abstractions
-- Durable or distributed detection-window state
-- Additional detection rules
-- Risk scoring
-- Incident creation, enrichment, and response actions
-- Production security hardening and observability
+Sentinel is organized around five main responsibilities:
 
-## Quick start
+1. **Ingest** security events from authentication systems, cloud providers, and network sources.
+2. **Normalize** raw telemetry into a common event shape that detection rules can evaluate consistently.
+3. **Detect** suspicious behavior using stateful rules and configurable thresholds.
+4. **Score** the risk of findings so response work can be prioritized.
+5. **Respond** by creating incidents and coordinating approved follow-up actions.
 
-### Run locally
+The FastAPI application exposes the service boundary. SQLAlchemy models persist users, security events, detection findings, and incidents. Redis can be used for event fan-out so downstream workers and integrations can subscribe to the security event stream.
+
+## Quick Start
 
 Create a virtual environment, install dependencies, and start the API:
 
@@ -63,32 +60,80 @@ Expected response:
 {"status":"ok"}
 ```
 
-FastAPI's interactive documentation is available at `http://localhost:8000/docs`.
+FastAPI's interactive API documentation is available at `http://localhost:8000/docs`.
 
-### Start local dependencies
+## Local Dependencies
 
-PostgreSQL and Redis are provided for local development:
+PostgreSQL and Redis are available through Docker Compose:
 
 ```bash
 docker compose up -d
 ```
 
-The Compose defaults are:
+The local defaults are:
 
 | Service | Address | Default credentials |
 | --- | --- | --- |
 | PostgreSQL | `localhost:5432` | database `sentinel`, user `sentinel`, password `sentinel` |
 | Redis | `localhost:6379` | none |
 
-The application uses PostgreSQL when `DATABASE_URL` points to it and publishes login events to Redis when `REDIS_URL` is set. Do not use the default credentials in a shared or production environment.
+Use the PostgreSQL database by setting `DATABASE_URL`. Enable Redis event publishing by setting `REDIS_URL`.
 
-To stop the dependencies:
+```bash
+export DATABASE_URL='postgresql+psycopg://sentinel:sentinel@localhost:5432/sentinel'
+export REDIS_URL='redis://localhost:6379/0'
+```
+
+Do not use the default credentials in shared or production environments.
+
+To stop local dependencies:
 
 ```bash
 docker compose down
 ```
 
 Add `-v` only when you intentionally want to remove the local PostgreSQL and Redis volumes.
+
+## Authentication Bootstrap
+
+Sentinel can create an initial local user at startup when bootstrap credentials are provided:
+
+```bash
+export AUTH_SECRET='replace-with-a-long-random-secret'
+export BOOTSTRAP_USERNAME='admin'
+export BOOTSTRAP_PASSWORD='replace-with-a-strong-password'
+```
+
+After starting the API, request an access token:
+
+```bash
+curl -X POST http://localhost:8000/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"replace-with-a-strong-password"}'
+```
+
+Each login attempt is recorded as an `authentication.login` security event. Failed login bursts are evaluated by detection rules and can produce detection findings when configured thresholds are crossed.
+
+## Event Ingestion
+
+Security events can be submitted to the ingestion API:
+
+```bash
+curl -X POST http://localhost:8000/events \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "event_type": "network.connection",
+    "actor": "scanner",
+    "source": "firewall",
+    "outcome": "failure",
+    "payload": {
+      "source_ip": "203.0.113.10",
+      "destination_port": 22
+    }
+  }'
+```
+
+In the complete system, ingestion will support multiple telemetry sources while preserving enough raw context for investigations and audit trails.
 
 ## Configuration
 
@@ -97,50 +142,32 @@ Configuration is read from environment variables through `app.config.Settings`:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | in-memory SQLite | SQLAlchemy database connection URL; use PostgreSQL for deployed environments |
-| `REDIS_URL` | empty | Redis connection URL; when set, login events are published to Redis Streams |
+| `REDIS_URL` | empty | Redis connection URL; when set, security events are published to Redis Streams |
 | `AUTH_SECRET` | development value | HMAC secret used to sign login tokens |
 | `AUTH_TOKEN_TTL_SECONDS` | `3600` | Login-token lifetime |
 | `BOOTSTRAP_USERNAME` | empty | Optional initial user created at startup |
 | `BOOTSTRAP_PASSWORD` | empty | Password for the optional initial user |
 | `BRUTE_FORCE_THRESHOLD` | `5` | Failed logins required to trigger brute-force detection |
-| `BRUTE_FORCE_WINDOW_SECONDS` | `60` | Sliding detection window |
-
-Example:
-
-```bash
-export DATABASE_URL='postgresql+psycopg://sentinel:sentinel@localhost:5432/sentinel'
-export REDIS_URL='redis://localhost:6379/0'
-export AUTH_SECRET='replace-with-a-long-random-secret'
-export BOOTSTRAP_USERNAME='admin'
-export BOOTSTRAP_PASSWORD='replace-with-a-strong-password'
-```
-
-With the bootstrap variables set, start the API once to create the initial user, then log in:
-
-```bash
-curl -X POST http://localhost:8000/login \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"replace-with-a-strong-password"}'
-```
-
-Each login attempt creates an `authentication.login` security event. The event is committed to PostgreSQL and, when `REDIS_URL` is configured, appended to the Redis Stream named `security-events`.
+| `BRUTE_FORCE_WINDOW_SECONDS` | `60` | Sliding window for brute-force detection |
+| `PORT_SCAN_THRESHOLD` | `10` | Distinct destination ports required to trigger port-scan detection |
+| `PORT_SCAN_WINDOW_SECONDS` | `60` | Sliding window for port-scan detection |
 
 ## Development
 
-Run the test suite from the repository root with:
+Run the test suite from the repository root:
 
 ```bash
 python3 -m pytest
 ```
 
-Using `python3 -m pytest` ensures the repository root is on Python's import path. Add tests alongside each implemented boundary, especially for parser behavior, detection windows, risk decisions, authorization, and response idempotency.
+Using `python3 -m pytest` keeps the repository root on Python's import path.
 
-## Repository layout
+## Repository Layout
 
 ```text
-app/                  FastAPI application, configuration, API, schemas, and models
-telemetry/            Authentication and CloudTrail adapters plus normalization
-detection/            Detection engine, state, and detection rules
+app/                  FastAPI application, configuration, API routes, schemas, and models
+telemetry/            Authentication and CloudTrail adapters plus normalization utilities
+detection/            Detection engine, state management, and detection rules
 risk/                 Risk scoring engine
 response/             Incident response engine
 tests/                Automated tests
@@ -149,28 +176,25 @@ Dockerfile            Container image definition
 docker-compose.yml    Local PostgreSQL and Redis dependencies
 ```
 
-## Planned architecture
+## Documentation
 
-1. **Ingest** security events from authentication systems and AWS CloudTrail.
-2. **Normalize** provider-specific payloads into a common event model.
-3. **Detect** suspicious behavior using stateful rules such as brute-force attempts, password spraying, and suspicious IAM activity.
-4. **Score risk** using event context, rule confidence, asset/user criticality, and historical state.
-5. **Create and manage incidents** with evidence, status, ownership, and audit history.
-6. **Respond** through controlled, authenticated, and auditable actions.
+Additional design notes live in:
 
-The design notes in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/DETECTIONS.md`](docs/DETECTIONS.md), and [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) are placeholders and should evolve with each implementation milestone.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- [`docs/DETECTIONS.md`](docs/DETECTIONS.md)
+- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)
 
-## Security considerations
+## Security Expectations
 
-Before using Sentinel with real security telemetry, the project needs at least:
+Before Sentinel is used with real security telemetry, deployments should provide:
 
 - Strong authentication and role-based authorization for all non-health endpoints
-- Secret management instead of committed or default credentials
-- Input validation, payload-size limits, and replay/duplication handling
-- Tenant and data-access isolation, if the service is multi-tenant
-- Encryption in transit and at rest where appropriate
-- Structured audit logs for detections, incident changes, and response actions
-- Safe, approval-aware response actions with idempotency and rollback procedures
+- Production secret management instead of default or committed credentials
+- Input validation, payload-size limits, deduplication, and replay protection
+- Tenant and data-access isolation where applicable
+- Encryption in transit and at rest
+- Structured audit logs for detections, incident updates, and response actions
+- Approval-aware response actions with idempotency and rollback procedures
 - Retention, redaction, and access controls for sensitive event data
 
 ## License

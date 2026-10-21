@@ -11,7 +11,8 @@ from app.models.security_event import SecurityEvent
 
 
 def record_security_event(
-    *, db: Session, event_id: str, event_type: str, actor: str, outcome: str, payload: dict, source: str = "api"
+    *, db: Session, event_id: str, event_type: str, actor: str, outcome: str, payload: dict,
+    source: str = "api", occurred_at: datetime | None = None,
 ) -> SecurityEvent:
     event = SecurityEvent(
         id=event_id,
@@ -20,7 +21,7 @@ def record_security_event(
         source=source,
         outcome=outcome,
         payload=payload,
-        created_at=datetime.utcnow(),
+        created_at=occurred_at or datetime.utcnow(),
     )
     db.add(event)
     db.commit()

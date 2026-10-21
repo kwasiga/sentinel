@@ -18,6 +18,12 @@ class UniqueValueWindow:
     alerted: bool = False
 
 
+@dataclass
+class ActorWindow:
+    events: deque[tuple[datetime, str, str]]
+    alerted: bool = False
+
+
 class DetectionState:
     """In-process sliding-window state for the first detector implementation.
 
@@ -27,6 +33,7 @@ class DetectionState:
     def __init__(self) -> None:
         self._windows: dict[str, FailureWindow] = {}
         self._unique_windows: dict[str, UniqueValueWindow] = {}
+        self._actor_windows: dict[str, ActorWindow] = {}
         self._lock = Lock()
 
     def add_failure(
@@ -71,6 +78,22 @@ class DetectionState:
 
             event_ids = [event_id for _, event_id, port in state.events if port in unique_values]
             return event_ids, unique_values, is_threshold_met and not was_alerted
+
+    def add_distinct_actor(
+        self, *, key: str, event_id: str, actor: str, occurred_at: datetime, window_seconds: int, threshold: int
+    ) -> tuple[list[str], list[str], bool]:
+        cutoff = occurred_at - timedelta(seconds=window_seconds)
+        with self._lock:
+            state = self._actor_windows.setdefault(key, ActorWindow(events=deque()))
+            while state.events and state.events[0][0] < cutoff:
+                state.events.popleft()
+            was_alerted = state.alerted
+            state.events.append((occurred_at, event_id, actor))
+            actors = sorted({seen_actor for _, _, seen_actor in state.events})
+            threshold_met = len(actors) >= threshold
+            state.alerted = threshold_met
+            event_ids = [seen_id for _, seen_id, _ in state.events]
+            return event_ids, actors, threshold_met and not was_alerted
 
 
 state = DetectionState()
